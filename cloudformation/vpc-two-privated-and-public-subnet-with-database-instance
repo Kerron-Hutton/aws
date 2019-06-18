@@ -1,0 +1,425 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudFormation template for creating a VPC with two public and 
+  private subnets along with a RDS instance in one the private
+  subnets. This template also configures an EC2 Instance that serves
+  as a Bastion Host for accessing the database. Required security groups
+  were also configured for accessing the RDS Instance.
+Parameters:
+  Environment:
+    AllowedValues: 
+      - development
+      - production
+      - staging
+      - testing
+    Default: development
+    Description: >
+      Environment stage used in resource naming.
+    Type: String
+  Application:
+    Description: >
+      Application name for which the CF stack will be created in.
+    Type: String
+  KeyPairName:
+    Description: >
+      Specify an Amazon EC2 key pair.
+    Type: String
+  DatabaseName: 
+    Description: >
+      Initial database name.
+    Type: String
+  DBMasterUserPassword:
+    Description: >
+      Specify an alphanumeric string that defines
+      the login ID for the master user.
+    NoEcho: true
+    Type: String
+Mappings:
+  SubnetConfig:
+    VPC:
+      CIDR: 10.44.0.0/16
+    PublicA:
+      CIDR: 10.44.0.0/24
+    PublicB:
+      CIDR: 10.44.1.0/24
+    PrivateA:
+      CIDR: 10.44.2.0/24
+    PrivateB:
+      CIDR: 10.44.3.0/24
+  EC2RegionMap:
+    us-east-1:
+      AMI: ami-02da3a138888ced85
+    us-east-2:
+      AMI: ami-0de7daa7385332688
+    us-west-1:
+      AMI: ami-09bfcadb25ee95bec
+    us-west-2:
+      AMI: ami-095cd038eef3e5074
+    eu-west-1:
+      AMI: ami-02a39bdb8e8ee056a
+    eu-west-2:
+      AMI: ami-07a5200f3fa9c33d3
+    eu-west-3:
+      AMI: ami-0e9073d7ac75f4491
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !FindInMap [SubnetConfig, VPC, CIDR]
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+        - Key: Name
+          Value: !Sub ${Application} Backend VPC
+  PublicSubnetA:
+    DependsOn:
+      - VPC
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !FindInMap [SubnetConfig, PublicA, CIDR]
+      Tags:
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+        - Key: Network
+          Value: Public
+        - Key: Name
+          Value: !Sub ${Application} Public Subnet A
+  PublicSubnetB:
+    DependsOn:
+      - VPC
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [SubnetConfig, PublicB, CIDR]
+      Tags:
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+        - Key: Network
+          Value: Public
+        - Key: Name
+          Value: !Sub ${Application} Public Subnet B
+  PrivateSubnetA:
+    DependsOn:
+      - VPC
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, "Fn::GetAZs" : ""]
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [SubnetConfig, PrivateA, CIDR]
+      Tags:
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+        - Key: Network
+          Value: Private
+        - Key: Name
+          Value: !Sub ${Application} Private Subnet A
+  PrivateSubnetB:
+    DependsOn:
+      - VPC
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, "Fn::GetAZs" : ""]
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [SubnetConfig, PrivateB, CIDR]
+      Tags:
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+        - Key: Network
+          Value: Private
+        - Key: Name
+          Value: !Sub ${Application} Private Subnet B
+  DatabaseSubnetGroup: 
+    DependsOn:
+      - PrivateSubnetA
+      - PrivateSubnetB
+    Type: AWS::RDS::DBSubnetGroup
+    Properties: 
+      DBSubnetGroupDescription: >
+        !Sub ${Application} subnets for RDS Instances.
+      SubnetIds: 
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      Tags: 
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+        - Key: Name
+          Value: !Sub ${Application} Database Subnet Group 
+  DatabaseSecurityGroup:
+    DependsOn:
+      - DatabaseSubnetGroup
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Database Security Group
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+        - Key: Name
+          Value: !Sub ${Application} Database Security Group 
+  LambdaSecurityGroup:
+    DependsOn:
+      - DatabaseSubnetGroup
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Database Security Group
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+        - Key: Name
+          Value: !Sub ${Application} Lambda Security Group 
+  LambdaSecurityGroupIngress:
+    DependsOn:
+      - DatabaseSecurityGroup
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      IpProtocol: tcp
+      FromPort: '3306'
+      ToPort: '3306'
+      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+        - Key: Name
+          Value: !Sub ${Application} Internet Gateway
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: 
+      - InternetGatewayAttachment
+    Properties: 
+      Domain: vpc
+  NatGateway: 
+    Type: AWS::EC2::NatGateway
+    Properties: 
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+        - Key: Name
+          Value: !Sub ${Application} NAT Gateway
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: 
+      VpcId: !Ref VPC
+      Tags: 
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+        - Key: Name
+          Value: !Sub ${Application} Public Route Table
+  DefaultPublicRoute: 
+    Type: AWS::EC2::Route
+    DependsOn: 
+      - InternetGatewayAttachment
+    Properties: 
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetA
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetB
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: 
+      VpcId: !Ref VPC
+      Tags: 
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+        - Key: Name
+          Value: !Sub ${Application} Private Route Table
+  DefaultPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetA
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetB
+  EC2SecurityGroup:
+    DependsOn:
+      - VPC
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EC2 Security Group to SSH into RDS
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: '0.0.0.0/0'
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: '0.0.0.0/0'
+      Tags:
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+        - Key: Name
+          Value: !Sub ${Application} EC2 Security Group
+  EC2SecurityGroupIngress:
+    DependsOn:
+      - DatabaseSecurityGroup
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      IpProtocol: tcp
+      FromPort: '3306'
+      ToPort: '3306'
+      SourceSecurityGroupId: !Ref EC2SecurityGroup
+  EC2:
+    DependsOn:
+      - PublicSubnetA
+      - EC2SecurityGroup
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      KeyName: !Ref KeyPairName
+      SourceDestCheck: false
+      ImageId: !FindInMap [EC2RegionMap, !Ref 'AWS::Region', AMI]
+      NetworkInterfaces:
+        - GroupSet:
+            - !Ref EC2SecurityGroup
+          AssociatePublicIpAddress:  true
+          DeviceIndex: '0'
+          DeleteOnTermination: true
+          SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+        - Key: Name
+          Value: !Sub ${Application} Bastion Host
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y httpd.x86_64
+          systemctl start httpd.service
+          systemctl enable httpd.service
+          echo "Congrats your host => $(hostname -f) is online" > /var/www/html/index.html
+  DatabaseInstance: 
+    Type: AWS::RDS::DBInstance
+    Properties: 
+      DBInstanceIdentifier: !Sub ${Application}-Database-Instance
+      DBName: !Ref DatabaseName
+      AllocatedStorage:  "20"
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: false
+      DBInstanceClass: "db.t2.micro"
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      DeletionProtection: false
+      Engine: MySQL
+      EngineVersion: "8.0.13"
+      MasterUsername: root
+      MasterUserPassword: !Ref DBMasterUserPassword
+      MultiAZ: false
+      Port: "3306"
+      PubliclyAccessible: false
+      StorageType: gp2
+      Tags: 
+        - Key: Application
+          Value: !Ref Application
+        - Key: STAGE
+          Value: !Ref Environment
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+Outputs:
+  DatabaseSubnetGroupId:
+    Description: Database subnet group logical id.
+    Value: !Ref DatabaseSubnetGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-DatabaseSubnetGroupId
+  DatabaseSecurityGroupId:
+    Description: Database security group logical id.
+    Value: !Ref DatabaseSecurityGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-DatabaseSecurityGroupId
+  LambdaSecurityGroup:
+    Description: Lambda security group logical id.
+    Value: !Ref LambdaSecurityGroup
+    Export:
+      Name: !Sub ${Application}-${Environment}-LambdaSecurityGroupId
+  EC2PublicDnsName:
+    Description: The public DNS name of the created ec2 instance..
+    Value: !GetAtt EC2.PublicDnsName
+  PublicSubnetA:
+    Description: VPC public subnet A logical id.
+    Value: !Ref PublicSubnetA
+    Export:
+      Name: !Sub ${Application}-${Environment}-PublicSubnetAId
+  PublicSubnetB:
+    Description: VPC public subnet B logical id.
+    Value: !Ref PublicSubnetB
+    Export:
+      Name: !Sub ${Application}-${Environment}-PublicSubnetBId
+  PrivateSubnetA:
+    Description: VPC private subnet A logical id.
+    Value: !Ref PrivateSubnetA
+    Export:
+      Name: !Sub ${Application}-${Environment}-PrivateSubnetAId
+  PrivateSubnetB:
+    Description: VPC private subnet B logical id.
+    Value: !Ref PrivateSubnetB
+    Export:
+      Name: !Sub ${Application}-${Environment}-PrivateSubnetBId
+  DatabaseEndpointAddress:
+    Description: VPC private subnet B logical id.
+    Value: !GetAtt DatabaseInstance.Endpoint.Address
+    Export:
+      Name: !Sub ${Application}-${Environment}-DatabaseEndpointAddress
+      
